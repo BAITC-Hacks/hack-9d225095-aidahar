@@ -92,6 +92,7 @@ export function validateQuery(raw) {
     if(q.team_roles.length>8)fail('Выберите не больше 8 дополнительных ролей.');
   }
   if(raw.team_budget!=null && raw.team_budget!==''){
+    if(!['number','string'].includes(typeof raw.team_budget))fail('Укажите числовой бюджет команды.');
     q.team_budget=Number(raw.team_budget);
     if(!Number.isSafeInteger(q.team_budget)||q.team_budget<=0)fail('Общий бюджет команды должен быть положительным целым числом.');
   }

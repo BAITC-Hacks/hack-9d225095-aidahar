@@ -31,3 +31,26 @@ test('no key or no matches makes zero paid requests',async()=>{let calls=0;const
 test('provider errors are sanitized and not cached',async()=>{let calls=0;const ai=createAI({apiKey:'test-secret',fetchImpl:async()=>{calls++;return {ok:false,status:429,json:async()=>({error:'test-secret'})}}});for(let i=0;i<2;i++)await assert.rejects(ai.explain(base,profiles),e=>e.code==='quota_or_rate_limit'&&!e.message.includes('test-secret'));assert.equal(calls,2)});
 test('network timeout/refusal falls back intentionally',async()=>{const unavailable=createAI({apiKey:'test',fetchImpl:async()=>{throw new Error('transport details')}});await assert.rejects(unavailable.explain(base,profiles),{code:'timeout'});const refusal=createAI({apiKey:'test',fetchImpl:async()=>({ok:true,json:async()=>({status:'completed',output:[{content:[{type:'refusal',refusal:'no'}]}]})})});await assert.rejects(refusal.explain(base,profiles),{code:'invalid_response'})});
 test('changed profile content invalidates explanation cache',async()=>{let calls=0;const ai=createAI({apiKey:'test',fetchImpl:async()=>{calls++;return ok(insight)}});await ai.explain(base,profiles);await ai.explain(base,profiles.map(p=>p.id===base.cards[0].id?{...p,description:p.description+' Дополнение.'}:p));assert.equal(calls,2)});
+
+test('comparison rejects invented winners, missing alternatives and duplicates',()=>{
+ for(const comparison of [{...insight.comparison,recommended_id:'invented'},{...insight.comparison,alternatives:[]},{...insight.comparison,alternatives:candidates.map(()=>insight.comparison.alternatives[0])}])assert.throws(()=>validateInsights({...insight,comparison},candidates),/цитатами/);
+});
+test('LLM receives computed team coverage and shared budget; budget changes invalidate cache',async()=>{
+ let calls=0;const ai=createAI({apiKey:'test',fetchImpl:async(url,opts)=>{calls++;const payload=JSON.parse(JSON.parse(opts.body).input);assert.equal(payload.teams.length,3);assert.ok(payload.teams.every(t=>t.budget===payload.query.team_budget));assert.ok(payload.candidates.every(c=>Array.isArray(c.categories)));return ok(insight)}});
+ for(const team_budget of [2000000,2100000])await ai.explain(recommend(profiles,{...query,team_budget,team_roles:['Фотограф','Инструменталист']}),profiles);
+ assert.equal(calls,2);
+});
+test('brief preserves requested team roles and inherits team settings when omitted',()=>{
+ const context={...query,team_roles:['Фотограф'],team_budget:2000000};
+ assert.deepEqual(mergeBrief(parsed,context).query.team_roles,['Фотограф']);
+ const r=mergeBrief({...parsed,team_roles:['Инструменталист'],team_budget:1500000},context);assert.deepEqual(r.query.team_roles,['Инструменталист']);assert.equal(r.query.team_budget,1500000);
+});
+test('schema restricts each candidate to verbatim quotes from their own profile',async()=>{
+ const ai=createAI({apiKey:'test',fetchImpl:async(url,opts)=>{
+  const schema=JSON.parse(opts.body).text.format.schema;
+  assert.equal(schema.properties.comparison.properties.alternatives.minItems,candidates.length);
+  for(const variant of schema.properties.cards.items.anyOf){const id=variant.properties.id.enum[0];const profile=profiles.find(p=>p.id===id);assert.ok(profile);assert.ok(variant.properties.quote.enum.every(quote=>profile.description.includes(quote)));}
+  return ok(insight);
+ }});
+ await ai.explain(base,profiles);
+});
