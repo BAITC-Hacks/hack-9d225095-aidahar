@@ -7,7 +7,7 @@ const profiles=parseCatalog(await readFile(new URL('../dist/catalog.jsonl',impor
 const query={city:'Алматы',date:'2026-11-14',event_format:'корпоратив',category:'Ведущий',budget:1200000,hours:4,language:'русский',wishes:'интеллигентный атмосферный'};
 const base=recommend(profiles,query);
 const candidates=base.cards.map(c=>({...c,description:profiles.find(p=>p.id===c.id).description}));
-const insight={summary:'У кандидатов разные стили ведения.',cards:candidates.map(c=>({id:c.id,angle:'Особенность профиля',reason:'Стиль можно сопоставить с вашим брифом.',quote:c.evidence.quote,question:'Как вы адаптируете программу под нашу команду?'}))};
+const insight={comparison:{recommended_id:candidates[0].id,reason:'Предпочтителен для заданного сценария.',tradeoff:'Состав программы нужно уточнить.',alternatives:candidates.map(c=>({id:c.id,choose_when:'Важен описанный стиль.'}))},summary:'У кандидатов разные стили ведения.',cards:candidates.map(c=>({id:c.id,angle:'Особенность профиля',reason:'Стиль можно сопоставить с вашим брифом.',quote:c.evidence.quote,question:'Как вы адаптируете программу под нашу команду?'}))};
 const parsed={is_event_request:true,city:'Алматы',date:'2026-11-14',event_format:'корпоратив',category:'Ведущий',budget:1200000,hours:null,language:null,wishes:'интеллигентный атмосферный',assumptions:[]};
 const ok=value=>({ok:true,json:async()=>({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]})});
 

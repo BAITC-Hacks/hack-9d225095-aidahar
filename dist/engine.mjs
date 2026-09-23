@@ -87,6 +87,14 @@ export function validateQuery(raw) {
   q.language=typeof raw.language==='string'?raw.language.trim():'';
   q.wishes=typeof raw.wishes==='string'?raw.wishes.trim():'';
   if(q.wishes.length>500) fail('Пожелания: не больше 500 символов.');
+  if(raw.team_roles!=null){
+    q.team_roles=list(raw.team_roles,'team_roles');
+    if(q.team_roles.length>8)fail('Выберите не больше 8 дополнительных ролей.');
+  }
+  if(raw.team_budget!=null && raw.team_budget!==''){
+    q.team_budget=Number(raw.team_budget);
+    if(!Number.isSafeInteger(q.team_budget)||q.team_budget<=0)fail('Общий бюджет команды должен быть положительным целым числом.');
+  }
   return q;
 }
 const stems = ['атмосфер','интеллигент','импровиза','вокал','камерн','бизнес','форум','репортаж','портрет','цветоч','авторск','свет','звук','панорам','классическ','современн','спокойн','интерактив','английск','казахск','русск','минимал','жив'];
@@ -126,7 +134,7 @@ export function recommend(profiles,raw) {
   }
   candidates.sort((a,b)=>b.score-a.score || a.p.price_from_kzt-b.p.price_from_kzt || (a.p.id<b.p.id?-1:a.p.id>b.p.id?1:0));
   const cards=candidates.slice(0,3).map(({p,ev,score,semanticPoints,budgetPoints})=>({
-    id:p.id,name:p.anon_name,category:q.category,city:p.city,price_from_kzt:p.price_from_kzt,
+    id:p.id,name:p.anon_name,category:q.category,categories:p.categories,city:p.city,price_from_kzt:p.price_from_kzt,
     synthetic:p.synthetic,added_for_demo:p.added_for_demo,city_imputed:p.city_imputed,price_imputed:p.price_imputed,
     max_hours:p.max_hours,languages:p.languages,score:Number(score.toFixed(2)),
     evidence:ev,score_breakdown:{description:semanticPoints,budget:Number(budgetPoints.toFixed(2))},
@@ -147,5 +155,28 @@ export function recommend(profiles,raw) {
     dates.sort((a,b)=>Math.abs(Date.parse(a)-Date.parse(q.date))-Math.abs(Date.parse(b)-Date.parse(q.date)) || (a<b?-1:1));
     if(dates.length) suggestions.push(`При тех же условиях есть кандидат на ${dates[0]}; дату можно изменить вручную.`);
   }
-  return {status,query:q,cards,total_in_category:local.length,eligible_count:candidates.length,exclusions,rejected_profiles:rejectedProfiles,message,suggestions,calendar_window:{start:START,end:END}};
+  return {status,query:q,cards,teams:q.team_roles?.length?cards.map(c=>buildTeam(profiles,q,c.id)):[],total_in_category:local.length,eligible_count:candidates.length,exclusions,rejected_profiles:rejectedProfiles,message,suggestions,calendar_window:{start:START,end:END}};
+}
+
+// Exact minimum-cost cover over at most nine roles. Each profile is paid once.
+export function buildTeam(profiles,query,anchorId) {
+  const q=validateQuery(query),budget=q.team_budget??q.budget;
+  const roles=[q.category,...(q.team_roles||[])].filter((v,i,a)=>a.findIndex(x=>eq(x,v))===i);
+  const anchor=profiles.find(p=>p.id===anchorId);
+  if(!anchor || !eq(anchor.city,q.city) || !has(anchor.categories,q.category) || rejected(anchor,q).length)fail('Основной кандидат не проходит условия.');
+  const mask=p=>roles.reduce((m,r,i)=>has(p.categories,r)?m|(1<<i):m,0);
+  const eligible=profiles.filter(p=>p.id!==anchorId && eq(p.city,q.city) && !rejected(p,{...q,budget}).length && mask(p)).sort((a,b)=>a.id.localeCompare(b.id));
+  const states=new Map([[mask(anchor),{cost:anchor.price_from_kzt,members:[anchor]}]]);
+  for(const p of eligible)for(const [m,state] of [...states]){
+    const next=m|mask(p),cost=state.cost+p.price_from_kzt;
+    if(next===m || cost>budget)continue;
+    const prev=states.get(next);
+    if(!prev || cost<prev.cost || cost===prev.cost && state.members.length+1<prev.members.length)states.set(next,{cost,members:[...state.members,p]});
+  }
+  const count=m=>m.toString(2).replaceAll('0','').length;
+  const [covered,state]=[...states].sort((a,b)=>count(b[0])-count(a[0]) || a[1].cost-b[1].cost || a[1].members.length-b[1].members.length)[0];
+  const missing=roles.filter((r,i)=>!(covered&(1<<i))).map(role=>({role,reason:eligible.some(p=>has(p.categories,role))?'Не помещается в общий бюджет вместе с выбранным составом.':'Нет отдельного кандидата, проходящего город, дату, формат, язык, часы и бюджет.'}));
+  return {anchor_id:anchorId,budget,total_from_kzt:state.cost,remaining_kzt:budget-state.cost,status:state.cost>budget?'over_budget':missing.length?'partial':'complete',roles,missing,
+    members:state.members.map(p=>({id:p.id,name:p.anon_name,roles:roles.filter(r=>has(p.categories,r)),price_from_kzt:p.price_from_kzt,synthetic:p.synthetic,price_imputed:p.price_imputed,city_imputed:p.city_imputed})),
+    note:'Минимальная сумма цен «от» для максимального числа ролей при этом основном кандидате. Категории подтверждены каталогом; совмещение ролей, состав пакета и итоговую смету нужно согласовать.'};
 }
