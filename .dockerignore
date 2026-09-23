@@ -1,0 +1,10 @@
+.git
+.gitignore
+.openai
+.sites-runtime
+node_modules
+*.zip
+*.tar.gz
+.env
+.env.*
+README.md

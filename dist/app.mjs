@@ -1,0 +1,71 @@
+import {parseCatalog,recommend,CATEGORIES,FORMATS,REASONS,money,START,END} from './engine.mjs?v=flags-2';
+const $=s=>document.querySelector(s),form=$('#request');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let catalog=[],original=[],last=null,revision=0,controller=null,aiReady=false,briefRevision=0;
+const defaults={city:'Алматы',date:'2026-11-14',event_format:'корпоратив',category:'Ведущий',budget:1200000,hours:4,language:'русский',wishes:'интеллигентный атмосферный'};
+const demos={autumn:{...defaults},next:{...defaults,date:'2026-11-15'},rare:{...defaults,category:'Флорист',budget:250000,wishes:'цветочные'},empty:{...defaults,budget:50000},absent:{...defaults,category:'Отель'},venue:{...defaults,category:'Банкетный зал',wishes:'панорамный свет'}};
+const fieldNames={city:'Город',date:'Дата',event_format:'Формат',category:'Категория',budget:'Бюджет',hours:'Часы',language:'Язык',wishes:'Пожелания'};
+function options(id,values,empty=false){const e=$('#'+id),prev=e.value;e.replaceChildren();if(empty)e.add(new Option('Любой',''));for(const s of [...new Set(values)])e.add(new Option(s,s));if([...e.options].some(o=>o.value===prev))e.value=prev;}
+function setFields(q){for(const [k,v] of Object.entries(q))if(form.elements[k]){const e=form.elements[k];if(e.tagName==='SELECT'&&!([...e.options].some(o=>o.value===String(v))))e.add(new Option(v,v));e.value=v??''}}
+function prepare(){options('city',['Алматы','Астана','Зарубежье',...catalog.map(p=>p.city)]);options('category',[...CATEGORIES,...catalog.flatMap(p=>p.categories)]);options('event_format',[...FORMATS,...catalog.flatMap(p=>p.event_formats)]);options('language',['русский','казахский','английский',...catalog.flatMap(p=>p.languages)],true);$('#catalog-status').textContent=`В каталоге ${catalog.length} профилей · синтетических ${catalog.filter(p=>p.synthetic).length}`;}
+const notice=text=>{$('#magic-notice').textContent=text};
+function invalidate(){revision++;briefRevision++;controller?.abort();}
+async function post(path,body,signal){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal});let data;try{data=await response.json()}catch{throw new Error('AI-сервис недоступен. Подбор по форме работает.')};if(!response.ok)throw new Error(data.error||'Не удалось выполнить AI-запрос.');return data;}
+function dateDifference(a,b){
+ if(!a||a.query.date===b.query.date)return '';
+ if(Object.keys(b.query).some(k=>k!=='date'&&a.query[k]!==b.query[k]))return '';
+ const removed=a.cards.filter(c=>!b.cards.some(n=>n.id===c.id));
+ const added=b.cards.filter(c=>!a.cards.some(n=>n.id===c.id));
+ return `<div class="date-diff"><h3>${esc(a.query.date)} → ${esc(b.query.date)}: что изменилось</h3>${removed.map(c=>{const rejected=b.rejected_profiles.find(p=>p.id===c.id);return `<p>Ушёл из списка: <strong>${esc(c.name)}</strong> — ${rejected?rejected.reasons.map(x=>esc(REASONS[x])).join('; '):'изменился порядок среди подходящих'}.</p>`}).join('')}${added.map(c=>`<p>Новый вариант: <strong>${esc(c.name)}</strong> — свободен по календарю, проходит ваши условия.</p>`).join('')}${!removed.length&&!added.length?'<p>Состав тройки остался прежним. Все показанные подрядчики свободны и на эту дату.</p>':''}</div>`;
+}
+function render(r,ms,{ai=null,pending=false,diff=''}={}){
+ const titles={matched:'Ваш короткий список',category_absent:'В городе нет этой категории',no_matches:'Никто не проходит все условия'};
+ let html=`<div class="result-heading"><h2>${titles[r.status]}</h2><span class="timing">${ms.toFixed(1)} мс · фильтры</span></div><p class="result-summary">${esc(r.message)}</p>`;
+ html+=`<div class="date-lab"><span>Такие же условия. Другая дата.</span><div class="date-lab-buttons"><button type="button" data-date-shift="-1" ${r.query.date<=START?'disabled':''}>На день раньше</button><button type="button" data-date-shift="1" ${r.query.date>=END?'disabled':''}>А если на следующий день? ↗</button></div></div>`+diff;
+ if(pending)html+='<div class="ai-wait" role="status">Условия проверены. AI сопоставляет особенности кандидатов с вашим брифом…</div>';
+ if(ai?.status==='ready')html+=`<div class="ai-summary"><span class="ai-caption">✦ ВЗГЛЯД AI-КОНСЬЕРЖА</span><p>${esc(ai.summary)}</p></div>`;
+ if(ai?.status==='unavailable')html+=`<div class="ai-fallback">${esc(ai.message)} Результат ниже получен без LLM.</div>`;
+ if(!r.cards.length)html+=`<div class="empty"><div class="state-label">${r.status==='category_absent'?'КАТЕГОРИЯ ОТСУТСТВУЕТ':'КАНДИДАТЫ ЕСТЬ, СОВПАДЕНИЙ НЕТ'}</div><h2>${r.status==='category_absent'?'Попробуйте другую категорию или город':'Измените одно из ограничений'}</h2><p>${r.status==='category_absent'?'Это относится к загруженному каталогу, а не ко всем подрядчикам города.':'Мы не включаем занятых подрядчиков и не ослабляем ваши условия автоматически.'}</p>${r.suggestions.map(s=>`<p>${esc(s)}</p>`).join('')}</div>`;
+ html+=r.cards.map((c,i)=>{
+  const insight=ai?.status==='ready'?ai.cards.find(x=>x.id===c.id):null;
+  return `<article class="card"><div class="card-top"><span class="rank">0${i+1}</span><div class="identity"><h3>${esc(c.name)}</h3><div class="meta">${esc(c.category)} · ${esc(c.city)}</div></div><div class="price">${money(c.price_from_kzt)}<small>от, за мероприятие</small></div></div><div class="badges"><span class="badge ${c.synthetic?'demo':'source'}">${c.added_for_demo?'Добавленный демопрофиль':c.synthetic?'Синтетический профиль датасета':'Исходный анонимизированный профиль'}</span><span class="badge">Свободен по календарю · ${esc(r.query.date)}</span>${c.price_imputed?'<span class="badge demo">Цена проставлена при подготовке</span>':''}${c.city_imputed?'<span class="badge demo">Город проставлен при подготовке</span>':''}</div><div class="why"><div class="why-label">ПРОВЕРЕННЫЕ УСЛОВИЯ</div><p class="explanation">${esc(c.explanation)}</p></div>${insight?`<div class="ai-insight"><span class="ai-caption">✦ AI-СВЯЗЬ С ВАШИМ ЗАПРОСОМ</span><h4>${esc(insight.angle)}</h4><p>${esc(insight.reason)}</p><blockquote>«${esc(insight.quote)}»</blockquote><p class="ai-question"><strong>Что уточнить:</strong> ${esc(insight.question)}</p></div>`:''}${r.query.wishes?`<p class="match-words">${c.evidence.matches.length?`Совпадения слов для ранжирования: ${c.evidence.matches.map(esc).join(', ')}.`:'Нет прямых совпадений слов; подходит по обязательным условиям.'}</p>`:''}<details class="card-details"><summary>Детали и оценка</summary><p>ID: ${esc(c.id)} · Языки: ${c.languages.map(esc).join(', ')} · ${c.max_hours===null?'Не привязан к часам присутствия':`До ${c.max_hours} ч на площадке`}<br>Баллы за описание: ${c.score_breakdown.description}; за запас бюджета: ${c.score_breakdown.budget}; всего: ${c.score}. Это соответствие запросу, не рейтинг качества.${insight?`<br>Интерпретация AI: ${esc(ai.model)}${ai.cached?' · сохранённый ответ':''}. Цитата проверена по профилю; вывод модели может требовать уточнения.`:''}</p></details></article>`;
+ }).join('');
+ if(r.rejected_profiles.length)html+=`<details class="audit"><summary>Почему не попали остальные (${r.rejected_profiles.length})</summary><p>Один профиль может не пройти несколько условий. Суммы причин могут превышать число исключённых.</p><ul>${r.rejected_profiles.map(p=>`<li><strong>${esc(p.name)}</strong>: ${p.reasons.map(x=>esc(REASONS[x])).join('; ')}.</li>`).join('')}</ul></details>`;
+ $('#results').innerHTML=html;last=r;delete document.body.dataset.stale;
+ for(const b of document.querySelectorAll('[data-date-shift]'))b.addEventListener('click',()=>{const date=new Date(Date.parse(r.query.date)+Number(b.dataset.dateShift)*86400000).toISOString().slice(0,10);try{run({...r.query,date})}catch(e){showError(e)}});
+}
+function run(q=Object.fromEntries(new FormData(form)),{enrich=true}={}){
+ const start=performance.now(),r=recommend(catalog,q),diff=dateDifference(last,r),ms=performance.now()-start;
+ invalidate();const current=revision;setFields(r.query);document.querySelectorAll('[data-demo]').forEach(b=>b.classList.remove('active'));
+ const pending=enrich&&aiReady&&$('#ai-enabled').checked&&r.cards.length>0;
+ render(r,ms,{pending,diff});
+ if(pending){
+  controller=new AbortController();
+  post('/api/ai/explain',{query:r.query,...(catalog!==original?{catalog}:{})},controller.signal).then(data=>{if(current===revision)render(r,ms,{ai:data.ai,diff})}).catch(e=>{if(current===revision&&e.name!=='AbortError')render(r,ms,{ai:{status:'unavailable',message:e.message},diff})});
+ }
+ return r;
+}
+function showError(e){invalidate();$('#results').innerHTML=`<div class="empty" role="alert"><h2>Проверьте параметры</h2><p class="error">${esc(e.message)}</p></div>`;last=null;delete document.body.dataset.stale}
+form.addEventListener('submit',e=>{e.preventDefault();try{run()}catch(e){showError(e)}});
+form.addEventListener('input',()=>{invalidate();document.body.dataset.stale='true';document.querySelectorAll('[data-demo]').forEach(b=>b.classList.remove('active'))});
+for(const b of document.querySelectorAll('[data-demo]'))b.addEventListener('click',()=>{try{run(demos[b.dataset.demo]);document.querySelectorAll('[data-demo]').forEach(el=>el.classList.toggle('active',el===b))}catch(e){showError(e)}});
+$('#ai-enabled').addEventListener('change',()=>{if(last)run(last.query)});
+$('#brief').addEventListener('input',()=>{briefRevision++;});
+$('#magic-form').addEventListener('submit',async e=>{
+ e.preventDefault();const ticket=++briefRevision,button=$('#magic-submit');button.disabled=true;button.textContent='Разбираем бриф…';notice('OpenAI извлекает город, дату, бюджет и пожелания.');$('#brief-chips').replaceChildren();
+ try{
+  const data=await post('/api/ai/brief',{brief:$('#brief').value,context:Object.fromEntries(new FormData(form))});
+  if(ticket!==briefRevision)return;
+  if(data.status==='needs_input'){setFields(data.extracted);notice(`Уточните в форме: ${data.missing.map(k=>fieldNames[k]).join(', ')}.`);return;}
+  const q=data.query;
+  $('#brief-chips').innerHTML=Object.entries(q).filter(([k,v])=>v!==''&&v!==null&&k!=='wishes').map(([k,v],i)=>`<span class="brief-chip ${data.inherited.includes(k)?'inherited':''}" style="animation-delay:${i*.05}s">${fieldNames[k]}: ${esc(k==='budget'?money(v):v)}${data.inherited.includes(k)?' · из формы':''}</span>`).join('');
+  notice(`Бриф разобран.${data.inherited.length?` Взято из формы: ${data.inherited.map(k=>fieldNames[k]).join(', ')}.`:''}${data.assumptions.length?' '+data.assumptions.join(' '):''} Проверьте параметры — их можно изменить.`);
+  run(q);
+ }catch(e){if(ticket===briefRevision)notice(e.message)}finally{button.disabled=!aiReady;button.textContent='✦ Подобрать по брифу';}
+});
+$('#upload').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{if(f.size>10*1024*1024)throw new Error('Максимальный размер файла — 10 МБ.');const next=parseCatalog(await f.text(),f.name);invalidate();catalog=next;last=null;prepare();try{run(undefined,{enrich:false})}catch(e){showError(e)}$('#upload-status').className='';$('#upload-status').textContent=`Загружено ${catalog.length} профилей из ${f.name}. Для AI-пояснений нажмите «Подобрать».`;}catch(e){$('#upload-status').className='error';$('#upload-status').textContent=e.message}finally{e.target.value=''}});
+$('#reset-data').addEventListener('click',()=>{catalog=original;last=null;prepare();run(defaults,{enrich:false});$('#upload-status').textContent='Демокаталог восстановлен.';$('#upload-status').className=''});
+$('#magic-submit').disabled=true;
+try{const response=await fetch('/catalog.jsonl');if(!response.ok)throw new Error('Не удалось загрузить каталог. Обновите страницу.');catalog=parseCatalog(await response.text());original=catalog;prepare();run(defaults,{enrich:false});document.querySelector('[data-demo="autumn"]').classList.add('active')}catch(e){showError(e);$('#submit').disabled=true;$('#catalog-status').textContent='Каталог недоступен'}
+try{const response=await fetch('/api/ai/config');if(!response.ok)throw new Error();const data=await response.json();aiReady=data.configured&&catalog.length>0;$('#ai-connection').textContent=aiReady?'OpenAI · ключ настроен':'AI не настроен';$('#magic-submit').disabled=!aiReady;$('#ai-enabled').checked=aiReady;if(!aiReady)notice('Подбор по форме доступен. Для AI нужен OPENAI_API_KEY в локальном .env.')}catch{$('#ai-connection').textContent='Обычный подбор';$('#ai-enabled').checked=false;notice('AI работает в Docker-версии приложения. Здесь доступен подбор по форме.')}
+if(document.modelContext?.registerTool){try{await document.modelContext.registerTool({name:'recommend_contractors',title:'Подобрать подрядчиков',description:'Подобрать до трёх подрядчиков из текущего каталога и показать результат без обращения к внешнему AI.',inputSchema:{type:'object',properties:{city:{type:'string'},date:{type:'string'},event_format:{type:'string'},category:{type:'string'},budget:{type:'integer',minimum:1},hours:{type:'number',exclusiveMinimum:0,maximum:72},language:{type:'string'},wishes:{type:'string',maxLength:500}},required:['city','date','event_format','category','budget'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:true},execute(input){const result=run(input,{enrich:false});return {status:result.status,cards:result.cards,message:result.message}}})}catch(e){console.warn('WebMCP недоступен',e.message)}}

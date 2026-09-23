@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: contractor-match:local
+    ports:
+      - "127.0.0.1:${APP_PORT:-4173}:4173"
+    environment:
+      PORT: 4173
+      HOST: 0.0.0.0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_TIMEOUT_MS: ${OPENAI_TIMEOUT_MS:-9000}
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
